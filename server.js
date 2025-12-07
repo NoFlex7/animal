@@ -1,10 +1,11 @@
 // Pet Tashkent API - Node.js + Express + MongoDB
-// Install: npm install express cors body-parser mongoose dotenv
+// Install: npm install express cors body-parser mongoose bcrypt
 
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
+const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 const app = express();
@@ -16,11 +17,22 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://sadullaernazarovich_db_user:VRQs0YbVZv6IJVbI@cluster0.v9fmj3c.mongodb.net/')
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/pet-tashkent')
 .then(() => console.log('✅ MongoDB подключена'))
 .catch(err => console.error('❌ Ошибка MongoDB:', err));
 
 // ============ MONGODB SCHEMAS ============
+
+// User Schema
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true, trim: true },
+  password: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+userSchema.index({ username: 1 });
+
+const User = mongoose.model('User', userSchema);
 
 // Animal Schema
 const animalSchema = new mongoose.Schema({
@@ -128,6 +140,154 @@ vetClinicSchema.index({ 'coordinates.lat': 1, 'coordinates.lng': 1 });
 vetClinicSchema.index({ name: 'text', services: 'text' });
 
 const VetClinic = mongoose.model('VetClinic', vetClinicSchema);
+
+// ============ AUTH ENDPOINTS ============
+
+// POST Register
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username и password обязательны' 
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Пароль должен быть минимум 6 символов' 
+      });
+    }
+
+    // Check if user exists
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Пользователь с таким username уже существует' 
+      });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create user
+    const user = new User({
+      username,
+      password: hashedPassword
+    });
+
+    await user.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Регистрация успешна',
+      data: {
+        id: user._id,
+        username: user.username,
+        createdAt: user.createdAt
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username и password обязательны' 
+      });
+    }
+
+    // Find user
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Неверный username или password' 
+      });
+    }
+
+    // Check password
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Неверный username или password' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Вход выполнен успешно',
+      data: {
+        id: user._id,
+        username: user.username,
+        createdAt: user.createdAt
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// PUT Update Password
+app.put('/api/auth/password', async (req, res) => {
+  try {
+    const { username, currentPassword, newPassword } = req.body;
+
+    if (!username || !currentPassword || !newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Username, текущий и новый пароль обязательны' 
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Новый пароль должен быть минимум 6 символов' 
+      });
+    }
+
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Пользователь не найден' 
+      });
+    }
+    
+    // Check current password
+    const validPassword = await bcrypt.compare(currentPassword, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Неверный текущий пароль' 
+      });
+    }
+
+    // Hash new password
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Пароль успешно обновлен'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // ============ ANIMAL ENDPOINTS ============
 
@@ -363,7 +523,7 @@ app.get('/api/shelters/:id/donations', async (req, res) => {
       .limit(50);
     
     const totalAmount = await Donation.aggregate([
-      { $match: { shelter: mongoose.Types.ObjectId(req.params.id), status: 'completed' } },
+      { $match: { shelter: new mongoose.Types.ObjectId(req.params.id), status: 'completed' } },
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
     
@@ -440,7 +600,7 @@ app.post('/api/vets', async (req, res) => {
 // GET nearby vet clinics
 app.get('/api/vets/nearby', async (req, res) => {
   try {
-    const { lat, lng, maxDistance = 5000 } = req.query; // maxDistance in meters
+    const { lat, lng, maxDistance = 5000 } = req.query;
     
     if (!lat || !lng) {
       return res.status(400).json({ success: false, message: 'Укажите координаты (lat, lng)' });
@@ -540,7 +700,7 @@ app.get('/api/stats', async (req, res) => {
 // ============ UTILITY FUNCTIONS ============
 
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Earth radius in km
+  const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
@@ -567,14 +727,12 @@ app.listen(PORT, () => {
   console.log(`🐾 Pet Tashkent API запущен на порту ${PORT}`);
   console.log(`📍 http://localhost:${PORT}`);
   console.log(`\nДоступные endpoints:`);
+  console.log(`  POST   /api/auth/register - Регистрация`);
+  console.log(`  POST   /api/auth/login - Вход`);
+  console.log(`  PUT    /api/auth/password - Изменить пароль`);
   console.log(`  GET    /api/animals - Все животные`);
-  console.log(`  GET    /api/animals/:id - Одно животное`);
   console.log(`  POST   /api/animals - Создать объявление`);
-  console.log(`  PUT    /api/animals/:id - Обновить`);
-  console.log(`  DELETE /api/animals/:id - Удалить`);
   console.log(`  GET    /api/shelters - Все приюты`);
-  console.log(`  POST   /api/shelters/:id/donate - Пожертвовать`);
   console.log(`  GET    /api/vets - Все ветклиники`);
-  console.log(`  GET    /api/vets/nearby - Ближайшие клиники`);
   console.log(`  GET    /api/stats - Статистика`);
 });
