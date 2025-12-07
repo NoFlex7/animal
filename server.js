@@ -17,7 +17,7 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/pet-tashkent')
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://sadullaernazarovich_db_user:VRQs0YbVZv6IJVbI@cluster0.v9fmj3c.mongodb.net/')
 .then(() => console.log('✅ MongoDB подключена'))
 .catch(err => console.error('❌ Ошибка MongoDB:', err));
 
