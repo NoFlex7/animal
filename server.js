@@ -141,6 +141,33 @@ vetClinicSchema.index({ name: 'text', services: 'text' });
 
 const VetClinic = mongoose.model('VetClinic', vetClinicSchema);
 
+// Product Schema
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  category: { type: String, enum: ['food', 'toy', 'accessory', 'medicine', 'grooming', 'other'], required: true },
+  animalType: { type: String, enum: ['dog', 'cat', 'bird', 'rabbit', 'all'], default: 'all' },
+  price: { type: Number, required: true },
+  description: { type: String, required: true },
+  imageUrl: String,
+  images: [String],
+  brand: String,
+  stock: { type: Number, default: 0 },
+  inStock: { type: Boolean, default: true },
+  featured: { type: Boolean, default: false },
+  rating: { type: Number, min: 0, max: 5, default: 0 },
+  reviewCount: { type: Number, default: 0 },
+  contactPhone: { type: String, required: true },
+  contactName: { type: String, required: true },
+  location: String,
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+productSchema.index({ category: 1, animalType: 1, inStock: 1 });
+productSchema.index({ name: 'text', description: 'text' });
+
+const Product = mongoose.model('Product', productSchema);
+
 // ============ AUTH ENDPOINTS ============
 
 // POST Register
@@ -645,6 +672,119 @@ app.get('/api/vets/nearby', async (req, res) => {
 
 // ============ STATISTICS ENDPOINT ============
 
+// ============ PRODUCT ENDPOINTS ============
+
+// GET all products with filters
+app.get('/api/products', async (req, res) => {
+  try {
+    const { category, animalType, inStock, featured, search, page = 1, limit = 12 } = req.query;
+    
+    let query = {};
+    
+    if (category) query.category = category;
+    if (animalType) query.animalType = animalType;
+    if (inStock === 'true') query.inStock = true;
+    if (featured === 'true') query.featured = true;
+    
+    if (search) {
+      query.$text = { $search: search };
+    }
+    
+    const products = await Product.find(query)
+      .sort({ featured: -1, createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .exec();
+    
+    const count = await Product.countDocuments(query);
+    
+    res.json({
+      success: true,
+      data: products,
+      pagination: {
+        total: count,
+        page: parseInt(page),
+        pages: Math.ceil(count / limit)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET single product by ID
+app.get('/api/products/:id', async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Товар не найден' });
+    }
+    
+    res.json({ success: true, data: product });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST create new product
+app.post('/api/products', async (req, res) => {
+  try {
+    const product = new Product(req.body);
+    await product.save();
+    
+    res.status(201).json({
+      success: true,
+      message: 'Товар успешно создан',
+      data: product
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// PUT update product
+app.put('/api/products/:id', async (req, res) => {
+  try {
+    req.body.updatedAt = Date.now();
+    
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+    
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Товар не найден' });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Товар обновлен',
+      data: product
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// DELETE product
+app.delete('/api/products/:id', async (req, res) => {
+  try {
+    const product = await Product.findByIdAndDelete(req.params.id);
+    
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Товар не найден' });
+    }
+    
+    res.json({ success: true, message: 'Товар удален' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ============ STATISTICS ENDPOINT ============
+
 app.get('/api/stats', async (req, res) => {
   try {
     const [
@@ -655,7 +795,9 @@ app.get('/api/stats', async (req, res) => {
       totalShelters,
       totalDonations,
       totalVets,
-      emergencyVets
+      emergencyVets,
+      totalProducts,
+      productsByCategory
     ] = await Promise.all([
       Animal.countDocuments(),
       Animal.aggregate([
@@ -669,12 +811,21 @@ app.get('/api/stats', async (req, res) => {
         { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
       ]),
       VetClinic.countDocuments(),
-      VetClinic.countDocuments({ emergency: true })
+      VetClinic.countDocuments({ emergency: true }),
+      Product.countDocuments(),
+      Product.aggregate([
+        { $group: { _id: '$category', count: { $sum: 1 } } }
+      ])
     ]);
     
     const petsByType = {};
     animalsByType.forEach(item => {
       petsByType[item._id] = item.count;
+    });
+
+    const products = {};
+    productsByCategory.forEach(item => {
+      products[item._id] = item.count;
     });
     
     const stats = {
@@ -688,7 +839,9 @@ app.get('/api/stats', async (req, res) => {
         count: totalDonations[0]?.count || 0
       },
       vets: totalVets,
-      emergencyVets
+      emergencyVets,
+      products: totalProducts,
+      productsByCategory: products
     };
     
     res.json({ success: true, data: stats });
@@ -732,6 +885,8 @@ app.listen(PORT, () => {
   console.log(`  PUT    /api/auth/password - Изменить пароль`);
   console.log(`  GET    /api/animals - Все животные`);
   console.log(`  POST   /api/animals - Создать объявление`);
+  console.log(`  GET    /api/products - Все товары`);
+  console.log(`  POST   /api/products - Создать товар`);
   console.log(`  GET    /api/shelters - Все приюты`);
   console.log(`  GET    /api/vets - Все ветклиники`);
   console.log(`  GET    /api/stats - Статистика`);
